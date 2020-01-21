@@ -1,5 +1,5 @@
 services: # here, specify the type of service(s) you'd like to test -- in the context of this sample, we are testing Geth
-  - name: geth1 # the name of the service you'd like to test
+  - name: geth # the name of the service you'd like to test
     description: this service runs the go-ethereum client
     image: "ethereum/client-go:alltools-latest" # specify an image and tag (if no tag is specified, defaults to 'latest')
     volumes:
@@ -7,7 +7,11 @@ services: # here, specify the type of service(s) you'd like to test -- in the co
         name: staticpeers
         scope: singleton
     script: # if a script is specified here, it will overrun the image's startup command
-      inline: cp /staticpeers/static-nodes.json /geth/geth/static-nodes.json && geth --nousb --datadir ./geth/ init /geth/genesis.json && geth --datadir ./geth/ --rpc --nodiscover --rpcaddr 0.0.0.0 --miner.gasprice=1 --rpcapi "admin,web3,db,eth,net,personal,miner,txpool" --rpccorsdomain "0.0.0.0" --txpool.nolocals --rpcvhosts=* --port 30303 --networkid 555555 --nousb --etherbase 0 --unlock 0 --allow-insecure-unlock --password ./geth/pw.txt --mine --minerthreads=1 --ethstats $NAME:secret@splunk.whiteblock.io:9002
+      inline: |
+       cp /staticpeers/static-nodes.json /geth/geth/static-nodes.json;
+       geth --nousb --datadir ./geth/ init /geth/genesis.json;
+       geth --datadir ./geth/ $(uname -n | egrep "[0-9]+" -o)
+       geth --datadir ./geth/ --rpc --nodiscover --rpcaddr 0.0.0.0 --miner.gasprice=1 --rpcapi "admin,web3,db,eth,net,personal,miner,txpool" --rpccorsdomain "0.0.0.0" --txpool.nolocals --rpcvhosts=* --port 30303 --networkid 555555 --nousb --etherbase 0 --unlock 0 --allow-insecure-unlock --password ./geth/pw.txt --mine --minerthreads=1 --ethstats $NAME:secret@splunk.whiteblock.io:9002
     input-files: # here, specify the files you'd like to include from the start
       - source-path: ./genesis.json # the source-path specified should be relative to the test definition file's location
         destination-path: /geth/genesis.json
@@ -21,34 +25,11 @@ services: # here, specify the type of service(s) you'd like to test -- in the co
       cpus: 8
       memory: 8 GB
       storage: 30 GiB
-  - name: geth2 # the name of the service you'd like to test
-    description: this service runs the go-ethereum client
-    image: "ethereum/client-go:alltools-latest" # specify an image and tag (if no tag is specified, defaults to 'latest')
-    volumes:
-      - path: /staticpeers/
-        name: staticpeers
-        scope: singleton
-    script: # if a script is specified here, it will overrun the image's startup command
-      inline: cp /staticpeers/static-nodes.json /geth/geth/static-nodes.json && geth --nousb --datadir ./geth/ init /geth/genesis.json && geth --datadir ./geth/ --rpc --nodiscover --rpcaddr 0.0.0.0 --miner.gasprice=1 --rpcapi "admin,web3,db,eth,net,personal,miner,txpool" --rpccorsdomain "0.0.0.0" --txpool.nolocals --rpcvhosts=* --port 30303 --networkid 555555 --nousb --etherbase 0 --unlock 0 --allow-insecure-unlock --password ./geth/pw.txt --mine --minerthreads=1 --ethstats $NAME:secret@splunk.whiteblock.io:9002
-    input-files: # here, specify the files you'd like to include from the start
-      - source-path: ./genesis.json # the source-path specified should be relative to the test definition file's location
-        destination-path: /geth/genesis.json
-      - source-path: ./keystore/pk2
-        destination-path: /geth/keystore/pk
-      - source-path: ./keystore/pw.txt
-        destination-path: /geth/pw.txt
-      - source-path: ./keystore/nodekey2
-        destination-path: /geth/geth/nodekey
-    resources: # specify the resources you'd like to allot to your service
-      cpus: 8
-      memory: 8 GB
-      storage: 30 GiB
 
 sidecars:
   - name: splunk
     sidecar-to:
-      - geth1
-      - geth2
+      - geth
     image: gcr.io/whiteblock/splunk:latest
     resources: # specify the resources you'd like to allot to your service
       cpus: 2
@@ -71,6 +52,7 @@ task-runners:
   - name: wait
     script:
       inline: sleep 7200
+  
   - name: geth-staticpeers-helper
     description: will gather the IP addresses and generate a static peers file.
     image: "gcr.io/whiteblock/helpers/besu/staticpeers:master"
@@ -79,12 +61,37 @@ task-runners:
         name: staticpeers
         scope: singleton
     script: # if a script is specified here, it will overrun the image's startup command
-      inline: ./besuStaticPeers generate -a '[{"publicKey":"04eab89943b5b2aa38745051471b31dc09d187c99b8fc6b740a8587ac43d1d65d644086a862189bc6298198453ba68076ebdb9cd7013d8893878f628a664376e"},{"publicKey":"a1ae7b1352fc0e02df6d75e90046d17fb212629a608f584760434df2375fb301ec9e55ac693a77f4bc0c3efdafec3b3853aa7cb2cb48480800ef6658f747d034"}]' -i '["'$GETH1_SERVICE0_COMMON_NETWORK'","'$GETH2_SERVICE0_COMMON_NETWORK'"]' >> /staticpeers/static-nodes.json
+      inline: ./besuStaticPeers generate -a "$(cat /var/geth/accounts/accounts.json)" --network common-network --service geth-service  >> /staticpeers/static-nodes.json
     resources: # specify the resources you'd like to allot to your service
       cpus: 1
       memory: 2 GB
       storage: 5 GiB
-tests: # here, specify the tests you'd like to run (a minimum of 1 test is required)
+  
+  - name: account-gen
+    image: gcr.io/whiteblock/helpers/eth/accgen
+    volumes:
+      - path: /var/geth/accounts
+        name: accounts
+        scope: singleton
+    script:
+      inline: ./ethAccGen generate 2 >> /var/geth/accounts/accounts.json
+
+  - name: generate-pk
+    image: imega/jq
+    volumes:
+      - path: /var/geth/accounts
+        name: accounts
+        scope: singleton
+    volumes:
+      - path: /var/geth/keys
+        name: keys
+        scope: singleton
+    script:
+      inline: |
+      for $i in $(seq 1 $(cat /var/geth/accounts/accounts.json | jq length)); do
+        cat /var/geth/accounts/accounts.json | jq ".[$i]" >> "/var/geth/keys/pk$i";
+      done
+tests:
   - name: geth_network_2_nodes # the name of the test
     description: first test - run two geth nodes on the common-network
     phases:
